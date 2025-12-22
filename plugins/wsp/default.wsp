@@ -1,0 +1,21 @@
+# default.wsp
+# Sets up root and plugin folder; does NOT touch counting or streaming
+
+# Ensure root exists
+if not os.path.exists("./root"):
+    os.makedirs("./root",exist_ok=True)
+
+# Ensure index.html exists
+index_file=os.path.join("./root","index.html")
+if not os.path.exists(index_file):
+    with open(index_file,"w",encoding="utf-8") as f:
+        f.write("<html><body><h1>Welcome to the Lynx Web Server!</h1></body></html>")
+
+# Ensure plugin folder exists
+if not os.path.exists(__plugin_folder__):
+    os.makedirs(__plugin_folder__,exist_ok=True)
+
+# Initialize cache for this plugin
+if "default_plugin_initialized" not in cache:
+    cache["default_plugin_initialized"] = True
+    save_cache(cache)
