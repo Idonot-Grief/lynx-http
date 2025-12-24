@@ -1,0 +1,112 @@
+# activity_monitor.wsp
+# A full-feature example plugin using HTTP hooks, WebSockets, and cache
+
+# ------------------------------------------------------------
+# Plugin initialization
+# ------------------------------------------------------------
+
+try:
+    if not os.path.exists(__plugin_folder__):
+        os.makedirs(__plugin_folder__, exist_ok=True)
+
+    # Initialize cache keys
+    if 'activity_monitor' not in cache:
+        cache['activity_monitor'] = {
+            'http_requests': 0,
+            'websocket_connections': 0,
+            'websocket_messages': 0
+        }
+        save_cache(cache)
+
+except Exception:
+    traceback.print_exc()
+
+
+# ------------------------------------------------------------
+# HTTP hooks
+# ------------------------------------------------------------
+
+def before_request_logger(request):
+    try:
+        cache['activity_monitor']['http_requests'] += 1
+        save_cache(cache)
+
+        print(
+            f"[HTTP] {request['client'].getpeername()} "
+            f"{request['method']} {request['path']}"
+        )
+
+    except Exception:
+        traceback.print_exc()
+
+
+def after_request_headers(request, response):
+    try:
+        response['headers']['X-Plugin'] = 'activity_monitor'
+        response['headers']['X-Total-Requests'] = str(
+            cache['activity_monitor']['http_requests']
+        )
+
+        # Simple built-in endpoint
+        if request['path'] == '/stats':
+            body = {
+                'http_requests': cache['activity_monitor']['http_requests'],
+                'websocket_connections': cache['activity_monitor']['websocket_connections'],
+                'websocket_messages': cache['activity_monitor']['websocket_messages']
+            }
+
+            response['status'] = 200
+            response['headers']['Content-Type'] = 'application/json'
+            response['body'] = json.dumps(body, indent=2).encode()
+
+    except Exception:
+        traceback.print_exc()
+
+
+plugin_hooks['before_request'].append(before_request_logger)
+plugin_hooks['after_request'].append(after_request_headers)
+
+
+# ------------------------------------------------------------
+# WebSocket hooks
+# ------------------------------------------------------------
+
+def ws_connect(conn, addr):
+    try:
+        cache['activity_monitor']['websocket_connections'] += 1
+        save_cache(cache)
+
+        print(f"[WS CONNECT] {addr}")
+        conn.sendall(b"Connected to activity_monitor WebSocket\n")
+
+    except Exception:
+        traceback.print_exc()
+
+
+def ws_message(conn, addr, message):
+    try:
+        cache['activity_monitor']['websocket_messages'] += 1
+        save_cache(cache)
+
+        print(f"[WS MESSAGE] {addr}: {message}")
+
+        # Echo message back
+        if isinstance(message, bytes):
+            conn.sendall(message)
+        else:
+            conn.sendall(str(message).encode())
+
+    except Exception:
+        traceback.print_exc()
+
+
+def ws_close(conn, addr):
+    try:
+        print(f"[WS CLOSE] {addr}")
+    except Exception:
+        traceback.print_exc()
+
+
+plugin_hooks['websocket_connect'].append(ws_connect)
+plugin_hooks['websocket_message'].append(ws_message)
+plugin_hooks['websocket_close'].append(ws_close)
