@@ -1,0 +1,144 @@
+# time_machine.wsp
+# Creative plugin: time-based behavior, easter eggs, virtual time offsets,
+# request rewriting, and WebSocket time streaming
+
+# ------------------------------------------------------------
+# Plugin initialization
+# ------------------------------------------------------------
+
+try:
+    if not os.path.exists(__plugin_folder__):
+        os.makedirs(__plugin_folder__, exist_ok=True)
+
+    if 'time_machine' not in cache:
+        cache['time_machine'] = {
+            'offset_seconds': 0,
+            'requests': 0,
+            'easter_egg_hits': 0,
+            'ws_clients': 0
+        }
+        save_cache(cache)
+
+except Exception:
+    traceback.print_exc()
+
+
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
+
+def get_virtual_time():
+    return int(time.time()) + int(cache['time_machine']['offset_seconds'])
+
+
+def format_time(ts):
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
+
+
+# ------------------------------------------------------------
+# HTTP hooks
+# ------------------------------------------------------------
+
+def before_request_timewarp(request):
+    try:
+        cache['time_machine']['requests'] += 1
+        save_cache(cache)
+
+        # Secret easter egg endpoint
+        if request['path'] == '/__timemachine__/warp':
+            qs = {}
+            if '?' in request['path']:
+                qs = parse_qs(request['path'].split('?', 1)[1])
+
+            offset = int(qs.get('seconds', ['0'])[0])
+            cache['time_machine']['offset_seconds'] += offset
+            cache['time_machine']['easter_egg_hits'] += 1
+            save_cache(cache)
+
+            request['__handled__'] = True
+            request['__response__'] = {
+                'status': 200,
+                'headers': {'Content-Type': 'text/plain'},
+                'body': f'Time offset adjusted by {offset} seconds\n'.encode()
+            }
+
+    except Exception:
+        traceback.print_exc()
+
+
+def after_request_time_headers(request, response):
+    try:
+        vt = get_virtual_time()
+        response['headers']['X-Virtual-Time'] = format_time(vt)
+        response['headers']['X-Time-Offset'] = str(cache['time_machine']['offset_seconds'])
+
+        # Public endpoint
+        if request['path'] == '/time':
+            body = {
+                'real_time': format_time(int(time.time())),
+                'virtual_time': format_time(vt),
+                'offset_seconds': cache['time_machine']['offset_seconds'],
+                'requests_seen': cache['time_machine']['requests'],
+                'easter_egg_hits': cache['time_machine']['easter_egg_hits']
+            }
+
+            response['status'] = 200
+            response['headers']['Content-Type'] = 'application/json'
+            response['body'] = json.dumps(body, indent=2).encode()
+
+    except Exception:
+        traceback.print_exc()
+
+
+plugin_hooks['before_request'].append(before_request_timewarp)
+plugin_hooks['after_request'].append(after_request_time_headers)
+
+
+# ------------------------------------------------------------
+# WebSocket hooks
+# ------------------------------------------------------------
+
+def ws_connect(conn, addr):
+    try:
+        cache['time_machine']['ws_clients'] += 1
+        save_cache(cache)
+
+        conn.sendall(b"Time Machine WebSocket online\n")
+
+    except Exception:
+        traceback.print_exc()
+
+
+def ws_message(conn, addr, message):
+    try:
+        msg = message.decode() if isinstance(message, bytes) else str(message)
+        msg = msg.strip().lower()
+
+        if msg == 'time':
+            conn.sendall(format_time(get_virtual_time()).encode() + b"\n")
+        elif msg.startswith('warp '):
+            try:
+                delta = int(msg.split(' ', 1)[1])
+                cache['time_machine']['offset_seconds'] += delta
+                save_cache(cache)
+                conn.sendall(f"Warped by {delta} seconds\n".encode())
+            except:
+                conn.sendall(b"Invalid warp command\n")
+        else:
+            conn.sendall(b"Commands: time | warp <seconds>\n")
+
+    except Exception:
+        traceback.print_exc()
+
+
+def ws_close(conn, addr):
+    try:
+        cache['time_machine']['ws_clients'] -= 1
+        save_cache(cache)
+    except Exception:
+        traceback.print_exc()
+
+
+plugin_hooks['websocket_connect'].append(ws_connect)
+plugin_hooks['websocket_message'].append(ws_message)
+plugin_hooks['websocket_close'].append(ws_close)
