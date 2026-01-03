@@ -1,4 +1,4 @@
-# Lynx Web Server 1.5
+# Lynx Web Server 1.5 with HTTPS plugin support
 import os
 import sys
 import socket
@@ -11,6 +11,7 @@ from urllib.parse import unquote_plus, parse_qs
 import base64
 import hashlib
 import time
+import ssl
 
 # --- HANDLE PATHS WHEN FROZEN ---
 if getattr(sys, 'frozen', False):
@@ -94,7 +95,7 @@ pre_imports = {
     "time": time,
     "hashlib": hashlib,
     "base64": base64,
-    "ssl": __import__("ssl"),
+    "ssl": ssl,
     "http": __import__("http"),
     "http_client": __import__("http.client"),
     "urllib_request": __import__("urllib.request"),
@@ -258,13 +259,27 @@ def handle_client(conn, addr):
 # --- SERVER START ---
 def start_server():
     os.makedirs(WEB_ROOT, exist_ok=True)
-    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+
+    # Determine if HTTPS is enabled by plugins
+    use_https = cache.get("https_enabled", False)
+    cert_file = cache.get("https_cert")
+    key_file  = cache.get("https_key")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         s.bind((config.get("host",HOST), config.get("port",PORT)))
         s.listen(50)
-        print(f"[*] Serving {os.path.abspath(WEB_ROOT)} on {config.get('host')}:{config.get('port')}")
+        print(f"[*] Serving {os.path.abspath(WEB_ROOT)} on {config.get('host')}:{config.get('port')} {'with HTTPS' if use_https else 'HTTP'}")
+
         while True:
             conn,addr = s.accept()
+            if use_https and cert_file and key_file:
+                try:
+                    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    context.load_cert_chain(cert_file, key_file)
+                    conn = context.wrap_socket(conn, server_side=True)
+                except Exception as e:
+                    print(f"[HTTPS ERROR] Failed to wrap connection: {e}")
             threading.Thread(target=handle_client, args=(conn,addr), daemon=True).start()
 
 if __name__=="__main__":
