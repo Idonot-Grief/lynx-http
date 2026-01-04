@@ -1,0 +1,171 @@
+# https.wsp — Automatic HTTPS + HTTP→HTTPS Redirect Plugin
+# NOTE: Plugins DO NOT import modules. Everything is provided by the server.
+
+PLUGIN_DIR = __plugin_folder__
+CERT_DIR = os.path.join(PLUGIN_DIR, "certs")
+BIN_DIR  = os.path.join(PLUGIN_DIR, "bin")
+
+os.makedirs(CERT_DIR, exist_ok=True)
+os.makedirs(BIN_DIR, exist_ok=True)
+
+# -------------------------------------------------
+# OS DETECTION
+# -------------------------------------------------
+def detect_os():
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform.startswith("darwin"):
+        return "macos"
+    return "unknown"
+
+OS_TYPE = detect_os()
+
+# -------------------------------------------------
+# CONFIG (set these in cache or manually)
+# -------------------------------------------------
+DOMAIN = cache.get("https_domain")
+EMAIL  = cache.get("https_email", "admin@localhost")
+
+if not DOMAIN:
+    print("[HTTPS] No domain configured — HTTPS disabled")
+
+# -------------------------------------------------
+# CERTBOT HANDLING
+# -------------------------------------------------
+def certbot_path():
+    if OS_TYPE == "windows":
+        return os.path.join(BIN_DIR, "certbot.exe")
+    return "certbot"
+
+def download_certbot_windows():
+    exe = certbot_path()
+    if os.path.exists(exe):
+        return exe
+
+    print("[HTTPS] Downloading Certbot (Windows)")
+    installer = os.path.join(BIN_DIR, "certbot-installer.exe")
+    url = "https://dl.eff.org/certbot-beta-installer-win64.exe"
+    urllib_request.urlretrieve(url, installer)
+    subprocess.call([installer, "/S"])
+    return exe
+
+def ensure_certbot():
+    try:
+        subprocess.check_output([certbot_path(), "--version"])
+        return True
+    except Exception:
+        if OS_TYPE == "windows":
+            download_certbot_windows()
+            return True
+    return False
+
+# -------------------------------------------------
+# CERTIFICATE ACQUISITION
+# -------------------------------------------------
+def obtain_certificate():
+    if not DOMAIN or not ensure_certbot():
+        return False
+
+    print(f"[HTTPS] Requesting certificate for {DOMAIN}")
+
+    cmd = [
+        certbot_path(),
+        "certonly",
+        "--standalone",
+        "--non-interactive",
+        "--agree-tos",
+        "--email", EMAIL,
+        "-d", DOMAIN
+    ]
+
+    try:
+        subprocess.call(cmd)
+    except Exception:
+        traceback.print_exc()
+        return False
+
+    if OS_TYPE == "windows":
+        le_dir = os.path.join("C:\\Certbot\\live", DOMAIN)
+    else:
+        le_dir = f"/etc/letsencrypt/live/{DOMAIN}"
+
+    fullchain = os.path.join(le_dir, "fullchain.pem")
+    privkey   = os.path.join(le_dir, "privkey.pem")
+
+    if not os.path.exists(fullchain) or not os.path.exists(privkey):
+        print("[HTTPS] Certificate files missing")
+        return False
+
+    dst_cert = os.path.join(CERT_DIR, "server.crt")
+    dst_key  = os.path.join(CERT_DIR, "server.key")
+
+    with open(fullchain, "rb") as f:
+        open(dst_cert, "wb").write(f.read())
+
+    with open(privkey, "rb") as f:
+        open(dst_key, "wb").write(f.read())
+
+    cache["https_enabled"] = True
+    cache["https_cert"] = dst_cert
+    cache["https_key"]  = dst_key
+    cache["https_last_issued"] = time.time()
+    save_cache(cache)
+
+    print("[HTTPS] Certificate installed")
+    return True
+
+# -------------------------------------------------
+# AUTO-RENEW THREAD
+# -------------------------------------------------
+def renewal_loop():
+    while True:
+        try:
+            last = cache.get("https_last_issued", 0)
+            if time.time() - last > 60 * 60 * 12:
+                obtain_certificate()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(3600)
+
+threading.Thread(target=renewal_loop, daemon=True).start()
+
+# -------------------------------------------------
+# HTTP → HTTPS REDIRECT
+# -------------------------------------------------
+def redirect_http_to_https(request, response):
+    if not cache.get("https_enabled"):
+        return
+
+    host = request["headers"].get("host", DOMAIN)
+    if not host:
+        return
+
+    # If request arrived unencrypted, redirect
+    if request["headers"].get("x-forwarded-proto", "http") == "http":
+        response["status"] = 301
+        response["headers"] = {
+            "Location": f"https://{host}{request['path']}"
+        }
+        response["body"] = b""
+
+plugin_hooks["after_request"].append(redirect_http_to_https)
+
+# -------------------------------------------------
+# HSTS HEADER
+# -------------------------------------------------
+def add_hsts(request, response):
+    if cache.get("https_enabled"):
+        response["headers"]["Strict-Transport-Security"] = \
+            "max-age=63072000; includeSubDomains"
+
+plugin_hooks["after_request"].append(add_hsts)
+
+# -------------------------------------------------
+# INITIAL RUN
+# -------------------------------------------------
+if "https_initialized" not in cache:
+    cache["https_initialized"] = True
+    save_cache(cache)
+    obtain_certificate()
