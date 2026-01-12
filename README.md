@@ -4,3 +4,5 @@ made for windows ffmpeg
 
 
 named after the species that come from the same family as my 3 pets 
+
+Made with user customizability in mind (plugins)
